@@ -1,14 +1,22 @@
 import io
 import base64
 from flask import Flask, request, jsonify
-from keras.models import load_model
 import numpy as np
-import cv2
+import tflite_runtime.interpreter as tflite
+from PIL import Image
 
 app = Flask(__name__)
-MODEL = load_model("./best_mnist_model.keras")
-LABELS = {0: "Zero", 1: "One", 2: "Two", 3: "Three", 4: "Four",
-          5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine"}
+
+# Load TFLite model and allocate tensors
+interpreter = tflite.Interpreter(model_path="mnist_model.tflite")
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()[0]
+output_details = interpreter.get_output_details()[0]
+
+LABELS = {
+    0: "Zero", 1: "One", 2: "Two", 3: "Three", 4: "Four",
+    5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine"
+}
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -76,7 +84,7 @@ HTML_TEMPLATE = '''
     </script>
 </body>
 </html>
-'''  
+'''
 
 @app.route('/')
 def index():
@@ -88,17 +96,24 @@ def predict():
         data = request.get_json()
         img_data = data['image'].split(',')[1]
         raw = base64.b64decode(img_data)
-        buf = np.frombuffer(raw, dtype=np.uint8)
-        img = cv2.imdecode(buf, cv2.IMREAD_GRAYSCALE)
-        # Resize to 28x28
-        resized = cv2.resize(img, (28, 28), interpolation=cv2.INTER_AREA)
-        norm = resized.astype(np.float32) / 255.0
-        inp = norm.reshape(1, 28, 28, 1)
-        pred = MODEL.predict(inp)
+
+        # Prepare image
+        pil_img = Image.open(io.BytesIO(raw)).convert('L')
+        pil_img = pil_img.resize((28, 28), Image.ANTIALIAS)
+
+        # Prepare input tensor
+        arr = np.array(pil_img, dtype=np.float32) / 255.0
+        input_shape = input_details['shape']
+        arr = arr.reshape(input_shape)
+
+        interpreter.set_tensor(input_details['index'], arr)
+        interpreter.invoke()
+        pred = interpreter.get_tensor(output_details['index'])
+
         label = LABELS[int(np.argmax(pred))]
         return jsonify({'label': label})
     except Exception as e:
         return jsonify({'error': str(e)})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
